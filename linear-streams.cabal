@@ -19,7 +19,9 @@ library
     Streaming.Prelude
   other-modules:
     Streaming.Consume
+    Streaming.Interop
     Streaming.Many
+    Streaming.Pair
     Streaming.Process
     Streaming.Produce
     Streaming.Type

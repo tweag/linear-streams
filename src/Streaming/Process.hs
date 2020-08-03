@@ -21,6 +21,14 @@ module Streaming.Process
   , span
   , group
   , groupBy
+  , distinguish
+  , switch
+  , seperate
+  , unseparate
+  , eitherToSum
+  , sumToEither
+  , sumToCompose
+  , composeToSum
   -- * Partitions
   , partitionEithers
   , partition

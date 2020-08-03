@@ -12,6 +12,8 @@ module Streaming.Many
   , zip3
   , zipWith3
   , unzip
+  , partitionEithers
+  , partition
   -}
   ) where
 
