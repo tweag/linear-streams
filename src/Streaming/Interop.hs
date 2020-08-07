@@ -16,6 +16,7 @@ import Prelude.Linear (($), (&))
 import Prelude (Maybe(..))
 import Control.Monad.Linear.Builder (BuilderType(..), monadBuilder)
 
+
 reread :: CMonad m =>
   (s -> m (Unrestricted (Maybe a))) -> s -> Stream (Of a) m ()
 reread f s = Effect $ do
@@ -25,5 +26,4 @@ reread f s = Effect $ do
     Just a -> return $ (yield a >> reread f s)
   where
     Builder{..} = monadBuilder
-
 
