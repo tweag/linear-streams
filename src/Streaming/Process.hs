@@ -71,8 +71,8 @@ module Streaming.Process
   , read
   , show
   , cons
-  --, slidingWindow
-  --, wrapEffect
+  , slidingWindow
+  , wrapEffect
   ) where
 
 import Streaming.Type
@@ -89,6 +89,7 @@ import System.IO.Linear
 import Data.Functor.Sum
 import Data.Functor.Compose
 import qualified Data.Set as Set
+import qualified Data.Sequence as Seq
 import qualified Data.IntSet as IntSet
 import Text.Read (readMaybe)
 import Control.Concurrent (threadDelay)
@@ -696,6 +697,45 @@ show = map Prelude.show
 cons :: Control.Monad m => a -> Stream (Of a) m r #-> Stream (Of a) m r
 cons a str = Step (a :> str)
 
-  --, wrapEffect
-  --, slidingWindow
+-- Note. The action function that is the second argument must be linear since
+-- it gets its argument from binding to the first argument, which uses a 
+-- control monad.
+wrapEffect :: (Control.Monad m, Control.Functor f, Consumable y) =>
+  m a -> (a #-> m y) -> Stream f m r #-> Stream f m r
+wrapEffect ma action stream = stream & \case
+  Return r -> Return r
+  Effect m -> Effect $ do
+    a <- ma
+    y <- action a
+    lseq y $ m
+  Step f -> Effect $ do
+    a <- ma
+    y <- action a
+    return $ lseq y $ Step f
+  where
+    Builder{..} = monadBuilder
+
+slidingWindow :: forall a b m. Control.Monad m => Int -> Stream (Of a) m b
+              #-> Stream (Of (Seq.Seq a)) m b
+slidingWindow n = setup (max 1 n :: Int) Seq.empty
+  where
+    Builder{..} = monadBuilder
+    window :: Seq.Seq a -> Stream (Of a) m b #-> Stream (Of (Seq.Seq a)) m b
+    window !sequ str = do
+      e <- Control.lift (next str)
+      e & \case
+        Left r -> return r
+        Right (Unrestricted a,rest) -> do
+          Step $ (sequ Seq.|> a) :> Return ()
+          window (Seq.drop 1 sequ Seq.|> a) rest
+    setup ::
+      Int -> Seq.Seq a -> Stream (Of a) m b #-> Stream (Of (Seq.Seq a)) m b
+    setup 0 !sequ str = do
+       Step (sequ :> Return ())
+       window (Seq.drop 1 sequ) str
+    setup n' sequ str = do
+      e <- Control.lift $ next str
+      e & \case
+        Left r -> Step (sequ :> Return ()) >> return r
+        Right (Unrestricted x,rest) -> setup (n'-1) (sequ Seq.|> x) rest
 
