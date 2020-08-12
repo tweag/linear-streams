@@ -679,4 +679,3 @@ cons a str = Step (a :> str)
   --, wrapEffect
   --, slidingWindow
 
-
