@@ -1,7 +1,9 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE LinearTypes #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RebindableSyntax #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 -- | This module provides functions that take one input
 -- stream and produce one output stream. These are functions that
@@ -14,31 +16,31 @@ module Streaming.Process
   , uncons
   , splitAt
   , split
-  --, breaks
-  --, break
-  --, breakWhen
-  --, span
-  --, group
-  --, groupBy
+  , breaks
+  , break
+  , breakWhen
+  , span
+  , group
+  , groupBy
   -- ** Sum and compose manipulation
-  --, distinguish
-  --, switch
-  --, seperate
-  --, unseparate
-  --, eitherToSum
-  --, sumToEither
-  --, sumToCompose
-  --, composeToSum
+  , distinguish
+  , switch
+  , separate
+  , unseparate
+  , eitherToSum
+  , sumToEither
+  , sumToCompose
+  , composeToSum
   -- * Partitions
-  --, partitionEithers
-  --, partition
+  , partitionEithers
+  , partition
   -- * Maybes
-  --, catMaybes
+  , catMaybes
   , mapMaybe
   -- ** Direct Transformations
   , map
   --, mapM
-  --, maps
+  , maps
   --, mapped
   --, for
   --, with
@@ -76,6 +78,8 @@ import qualified Prelude
 import Data.Unrestricted.Linear
 import qualified Control.Monad.Linear as Control
 import Control.Monad.Linear.Builder (BuilderType(..), monadBuilder)
+import Data.Functor.Sum
+import Data.Functor.Compose
 import GHC.Stack
 
 
@@ -93,6 +97,19 @@ consFirstChunk a stream = stream & \case
     Step f -> Step (Step (a :> f))
   where
     Builder{..} = monadBuilder
+
+destroyExposed
+  :: forall f m r b. (Control.Functor f, Control.Monad m) =>
+     Stream f m r #-> (f b #-> b) -> (m b #-> b) -> (r #-> b) -> b
+destroyExposed stream0 construct theEffect done = loop stream0
+  where
+    loop :: (Control.Functor f, Control.Monad m) =>
+      Stream f m r #-> b
+    loop stream = stream & \case
+      Return r -> done r
+      Effect m -> theEffect (Control.fmap loop m)
+      Step f  -> construct (Control.fmap loop f)
+{-# INLINABLE destroyExposed #-}
 
 
 -- # Splitting and inspecting streams of elements
@@ -204,19 +221,64 @@ group = groupBy (==)
 -- # Sum and compose manipulation
 -------------------------------------------------------------------------------
 
-  --, distinguish
-  --, switch
-  --, seperate
-  --, unseparate
-  --, eitherToSum
-  --, sumToEither
-  --, sumToCompose
-  --, composeToSum
+distinguish :: (a -> Bool) -> Of a r -> Sum (Of a) (Of a) r
+distinguish predicate (a :> b) = case predicate a of
+  True -> InR (a :> b)
+  False -> InL (a :> b)
+{-# INLINE distinguish #-}
+
+switch :: Sum f g r -> Sum g f r
+switch s = case s of InL a -> InR a; InR a -> InL a
+{-# INLINE switch #-}
+
+sumToEither :: Sum (Of a) (Of b) r ->  Of (Either a b) r
+sumToEither s = case s of
+  InL (a :> r) -> Left a :> r
+  InR (b :> r) -> Right b :> r
+{-# INLINE sumToEither #-}
+
+eitherToSum :: Of (Either a b) r -> Sum (Of a) (Of b) r
+eitherToSum s = case s of
+  Left a :> r  -> InL (a :> r)
+  Right b :> r -> InR (b :> r)
+{-# INLINE eitherToSum #-}
+
+composeToSum ::  Compose (Of Bool) f r -> Sum f f r
+composeToSum x = case x of
+  Compose (True :> f) -> InR f
+  Compose (False :> f) -> InL f
+{-# INLINE composeToSum #-}
+
+sumToCompose :: Sum f f r -> Compose (Of Bool) f r
+sumToCompose x = case x of
+  InR f -> Compose (True :> f)
+  InL f -> Compose (False :> f)
+{-# INLINE sumToCompose #-}
+
+separate :: forall m f g r.
+  (Control.Monad m, Control.Functor f, Control.Functor g) =>
+  Stream (Sum f g) m r -> Stream f (Stream g m) r
+separate stream = destroyExposed stream fromSum (Effect . Control.lift) Return
+  where
+    fromSum :: Sum f g (Stream f (Stream g m) r) #-> (Stream f (Stream g m) r)
+    fromSum x = x & \case
+      InL fss -> Step fss
+      InR gss -> Effect (Step $ Control.fmap Return gss)
+{-# INLINABLE separate #-}
+
+unseparate :: (Control.Monad m, Control.Functor f, Control.Functor g) =>
+  Stream f (Stream g m) r -> Stream (Sum f g) m r
+unseparate stream =
+  destroyExposed stream (Step . InL) (Control.join . maps InR) return
+ where
+    Builder{..} = monadBuilder
+{-# INLINABLE unseparate #-}
+
 
 -- # Partitions
 -------------------------------------------------------------------------------
 
-partition :: Control.Monad m =>
+partition :: forall a m r. Control.Monad m =>
   (a -> Bool) -> Stream (Of a) m r #-> Stream (Of a) (Stream (Of a) m) r
 partition pred = loop
   where
@@ -227,9 +289,20 @@ partition pred = loop
       Effect m -> Effect (Control.fmap loop (Control.lift m))
       Step (a :> as) -> case pred a of
         True -> Step (a :> loop as)
-        False -> Effect $ yield a >> return (loop rest)
+        False -> Effect $ Step $ a :> (Return (loop as))
 
--- partitionEithers
+partitionEithers :: Control.Monad m =>
+  Stream (Of (Either a b)) m r #-> Stream (Of a) (Stream (Of b) m) r
+partitionEithers = loop
+  where
+    Builder{..} = monadBuilder
+    loop :: Control.Monad m =>
+      Stream (Of (Either a b)) m r #-> Stream (Of a) (Stream (Of b) m) r
+    loop stream = stream & \case
+      Return r -> Return r
+      Effect m -> Effect $ Control.fmap loop (Control.lift m)
+      Step (Left a :> as) -> Step (a :> loop as)
+      Step (Right b :> as) -> Effect $ (Step $ b :> Return (loop as))
 
 
 -- # Maybes
@@ -266,8 +339,18 @@ map f stream = stream & \case
   Step (a :> rest) -> Step $ (f a) :> map f rest
   Effect ms -> Effect $ Control.fmap (map f) ms
 
+maps :: forall f g m r . (Control.Monad m, Control.Functor f) =>
+  (forall x . f x #-> g x) -> Stream f m r #-> Stream g m r
+maps phi = loop
+  where
+    Builder{..} = monadBuilder
+    loop :: Stream f m r #-> Stream g m r
+    loop stream = stream & \case
+      Return r -> Return r
+      Effect m -> Effect $ Control.fmap (maps phi) m
+      Step f -> Step (phi (Control.fmap loop f))
+
   --, mapM
-  --, maps
   --, mapped
   --, for
   --, with
