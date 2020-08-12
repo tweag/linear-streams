@@ -15,8 +15,6 @@ module Streaming.Many
   , zip3
   , zipWith3
   , unzip
-  , partitionEithers
-  , partition
   -- * Merging
   , merge
   , mergeOn
@@ -145,35 +143,6 @@ unzip = loop
     Return r -> Return r
     Effect m -> Effect $ Control.fmap loop $ Control.lift m
     Step ((a,b):> rest) -> Step (a :> Effect (Step (b :> Return (loop rest))))
-
-partitionEithers :: Control.Monad m =>
-  Stream (Of (Either a b)) m r #-> Stream (Of a) (Stream (Of b) m) r
-partitionEithers = loop
-  where
-    Builder{..} = monadBuilder
-    loop :: Control.Monad m =>
-      Stream (Of (Either a b)) m r #-> Stream (Of a) (Stream (Of b) m) r
-    loop s = s & \case
-      Return r -> Return r
-      Effect ms -> Effect $ Control.lift $ ms >>= (\str -> return $ loop str)
-      Step (e :> es) -> case e of
-        Left a -> Step (a :> loop es)
-        Right b -> Effect $ (Step (b :> Return (loop es)))
-
-partition :: forall a m r. Control.Monad m =>
-  (a -> Bool) -> Stream (Of a) m r #-> Stream (Of a) (Stream (Of a) m) r
-partition f = loop
-  where
-  Builder{..} = monadBuilder
-  loop :: Control.Monad m =>
-    Stream (Of a) m r #-> Stream (Of a) (Stream (Of a) m) r
-  loop s = s & \case
-    Return r -> Return r
-    Effect ms -> Effect $ Control.lift $ ms >>= (\str -> return $ loop str)
-    Step (a :> as) ->
-      case f a of
-        True -> Step (a :> (loop as))
-        False -> Effect $ Step (a :> Return (loop as))
 
 
 -- # Merging

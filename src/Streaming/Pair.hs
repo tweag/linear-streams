@@ -30,6 +30,6 @@ snd' (_ :> b) = b
 mapOf :: (a -> b) -> Of a r #-> Of b r
 mapOf f (a :> r) = (f a :> r)
 
-_second :: CFunctor f => (b -> f b') -> Of a b -> f (Of a b')
+_second :: Control.Functor f => (b -> f b') -> Of a b -> f (Of a b')
 _second f (a :> b) = Control.fmap (a :>) (f b)
 

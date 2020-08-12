@@ -64,12 +64,13 @@ module Streaming.Process
   , intersperse
   , drop
   , dropWhile
-  --, scan
-  --, scanM
-  --, scanned
-  --, read
-  --, show
-  --, cons
+  , scan
+  , scanM
+  , scanned
+  , delay
+  , read
+  , show
+  , cons
   --, slidingWindow
   --, wrapEffect
   ) where
@@ -78,17 +79,19 @@ import Streaming.Type
 import Prelude.Linear ((&), ($), (.))
 import qualified Prelude.Linear as Linear
 import Prelude (Maybe(..), Either(..), Bool(..), Int, fromInteger,
-               Ordering(..), Num(..), Eq(..), id, Ord(..), Read(..), Show(..),
-               String)
+               Ordering(..), Num(..), Eq(..), id, Ord(..), Read(..),
+               String, Double)
 import qualified Prelude
 import Data.Unrestricted.Linear
 import qualified Control.Monad.Linear as Control
 import Control.Monad.Linear.Builder (BuilderType(..), monadBuilder)
+import System.IO.Linear
 import Data.Functor.Sum
 import Data.Functor.Compose
 import qualified Data.Set as Set
 import qualified Data.IntSet as IntSet
 import Text.Read (readMaybe)
+import Control.Concurrent (threadDelay)
 import GHC.Stack
 
 
@@ -126,12 +129,14 @@ destroyExposed stream0 construct theEffect done = loop stream0
 -- # Splitting and inspecting streams of elements
 -------------------------------------------------------------------------------
 
+-- Remark. Since the 'a' is not held linearly in the 'Of' pair,
+-- we return it inside an 'Unrestricted'.
 next :: Control.Monad m =>
-  Stream (Of a) m r #-> m (Either r (a, Stream (Of a) m r))
+  Stream (Of a) m r #-> m (Either r (Unrestricted a, Stream (Of a) m r))
 next stream = stream & \case
   Return r -> return $ Left r
   Effect ms -> ms >>= next
-  Step (a :> as) -> return $ Right (a, as)
+  Step (a :> as) -> return $ Right (Unrestricted a, as)
   where
     Builder{..} = monadBuilder
 
@@ -669,7 +674,22 @@ read :: (Control.Monad m, Read a) =>
   Stream (Of String) m r #-> Stream (Of a) m r
 read = mapMaybe readMaybe
 
-show :: (Control.Monad m, Show a) =>
+delay :: forall a r. Double -> Stream (Of a) IO r #-> Stream (Of a) IO r
+delay seconds = loop
+  where
+    Builder{..} = monadBuilder
+    pico = Prelude.truncate (seconds * 1000000)
+    loop :: Stream (Of a) IO r #-> Stream (Of a) IO r
+    loop stream = do
+      e <- Control.lift $ next stream
+      e & \case
+        Left r -> Return r
+        Right (Unrestricted a,rest) -> do
+          Step (a :> Return ())
+          Control.lift $ fromSystemIO $ threadDelay pico
+          loop rest
+
+show :: (Control.Monad m, Prelude.Show a) =>
   Stream (Of a) m r #-> Stream (Of String) m r
 show = map Prelude.show
 

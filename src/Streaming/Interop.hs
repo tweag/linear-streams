@@ -14,10 +14,11 @@ import Streaming.Produce
 import Data.Unrestricted.Linear
 import Prelude.Linear (($), (&))
 import Prelude (Maybe(..))
+import qualified Control.Monad.Linear as Control
 import Control.Monad.Linear.Builder (BuilderType(..), monadBuilder)
 
 
-reread :: CMonad m =>
+reread :: Control.Monad m =>
   (s -> m (Unrestricted (Maybe a))) -> s -> Stream (Of a) m ()
 reread f s = Effect $ do
   Unrestricted maybeA <- f s
