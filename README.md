@@ -54,4 +54,8 @@ This change requires the `f` to have a `Control.Monad.Linear.Functor` instance
 and a `Control.Monad` instance for any `Stream f m` with appropriate `m` and `f`.
 In general, all changes are necessarily implied from just changing the `m`.
 
+## Conventions
+
+ * We use `Text` in place of `String`
+
 [streaming]: https://github.com/haskell-streaming/streaming

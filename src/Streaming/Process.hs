@@ -130,7 +130,7 @@ destroyExposed stream0 construct theEffect done = loop stream0
 -- # Splitting and inspecting streams of elements
 -------------------------------------------------------------------------------
 
--- Remark. Since the 'a' is not held linearly in the 'Of' pair,
+-- | Remark. Since the 'a' is not held linearly in the 'Of' pair,
 -- we return it inside an 'Unrestricted'.
 next :: Control.Monad m =>
   Stream (Of a) m r #-> m (Either r (Unrestricted a, Stream (Of a) m r))
@@ -197,7 +197,7 @@ breaks f stream = stream & \case
   where
     Builder{..} = monadBuilder
 
--- The funny type of this seems to be made to interoperate well with 
+-- Remark. The funny type of this seems to be made to interoperate well with
 -- `purely` from the `foldl` package.
 breakWhen :: Control.Monad m => (x -> a -> x) -> x -> (x -> b) -> (b -> Bool)
           -> Stream (Of a) m r #-> Stream (Of a) m (Stream (Of a) m r)
@@ -341,9 +341,9 @@ mapMaybe f stream = stream & \case
   where
     Builder{..} = monadBuilder
 
--- Note: since the 'b' inside the function that is the first argument
--- goes into an unrestricted spot of the 'Of' constructor, yet is trapped
--- in a control monad, it must be wrapped in an 'Unrestricted'.
+-- Note: the first function needs to wrap the 'b' in an 'Unrestricted'
+-- since the control monad is bound and the 'b' ends up in the first
+-- unrestricted spot of 'Of'.
 mapMaybeM :: Control.Monad m =>
   (a -> m (Maybe (Unrestricted b))) -> Stream (Of a) m r #-> Stream (Of b) m r
 mapMaybeM f stream = stream & \case
@@ -666,7 +666,7 @@ scanned step begin done = loop begin
       Effect m -> Effect $ Control.fmap (loop x) m
       Step (a :> as) -> do
         let !acc = done (step x a)
-        Step $ (a, acc) :> Return ()
+        Step $ (a, acc) :> Return () -- same as yield
         loop (step x a) as
 
 -- Note: this skips failed parses
@@ -686,7 +686,7 @@ delay seconds = loop
       e & \case
         Left r -> Return r
         Right (Unrestricted a,rest) -> do
-          Step (a :> Return ())
+          Step (a :> Return ()) -- same as yield
           Control.lift $ fromSystemIO $ threadDelay pico
           loop rest
 
@@ -720,22 +720,27 @@ slidingWindow :: forall a b m. Control.Monad m => Int -> Stream (Of a) m b
 slidingWindow n = setup (max 1 n :: Int) Seq.empty
   where
     Builder{..} = monadBuilder
+    -- Given the current sliding window, yield it and then recurse with
+    -- updated sliding window
     window :: Seq.Seq a -> Stream (Of a) m b #-> Stream (Of (Seq.Seq a)) m b
     window !sequ str = do
       e <- Control.lift (next str)
       e & \case
         Left r -> return r
         Right (Unrestricted a,rest) -> do
-          Step $ (sequ Seq.|> a) :> Return ()
+          Step $ (sequ Seq.|> a) :> Return () -- same as yield
           window (Seq.drop 1 sequ Seq.|> a) rest
+    -- Collect the first n elements in a sequence and call 'window'
     setup ::
       Int -> Seq.Seq a -> Stream (Of a) m b #-> Stream (Of (Seq.Seq a)) m b
     setup 0 !sequ str = do
-       Step (sequ :> Return ())
+       Step (sequ :> Return ()) -- same as yield
        window (Seq.drop 1 sequ) str
     setup n' sequ str = do
       e <- Control.lift $ next str
       e & \case
-        Left r -> Step (sequ :> Return ()) >> return r
+        Left r -> do
+          Step (sequ :> Return ()) -- same as yield
+          return r
         Right (Unrestricted x,rest) -> setup (n'-1) (sequ Seq.|> x) rest
 
