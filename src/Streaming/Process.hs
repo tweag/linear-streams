@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE LinearTypes #-}
 {-# LANGUAGE RankNTypes #-}
@@ -37,49 +38,57 @@ module Streaming.Process
   -- * Maybes
   , catMaybes
   , mapMaybe
+  , mapMaybeM
   -- ** Direct Transformations
   , map
-  --, mapM
+  , mapM
   , maps
-  --, mapped
-  --, for
-  --, with
-  --, subst
-  --, copy
-  --, copy'
-  --, store
-  --, chain
-  --, sequence
-  --, filter
-  --, filterM
-  --, delay
-  --, intersperse
-  --, take
-  --, takeWhile
-  --, takeWhileM
-  --, drop
-  --, dropWhile
-  --, concat
+  , mapped
+  , mapsPost
+  , mapsMPost
+  , mappedPost
+  , for
+  , with
+  , subst
+  , copy
+  , duplicate
+  , store
+  , chain
+  , sequence
+  , nubOrd
+  , nubOrdOn
+  , nubInt
+  , nubIntOn
+  , filter
+  , filterM
+  , intersperse
+  , drop
+  , dropWhile
   --, scan
   --, scanM
   --, scanned
   --, read
   --, show
   --, cons
-  --, duplicate
-  --, duplicate'
+  --, slidingWindow
+  --, wrapEffect
   ) where
 
 import Streaming.Type
 import Prelude.Linear ((&), ($), (.))
+import qualified Prelude.Linear as Linear
 import Prelude (Maybe(..), Either(..), Bool(..), Int, fromInteger,
-               Ordering(..), Num(..), Eq(..), id)
+               Ordering(..), Num(..), Eq(..), id, Ord(..), Read(..), Show(..),
+               String)
 import qualified Prelude
 import Data.Unrestricted.Linear
 import qualified Control.Monad.Linear as Control
 import Control.Monad.Linear.Builder (BuilderType(..), monadBuilder)
 import Data.Functor.Sum
 import Data.Functor.Compose
+import qualified Data.Set as Set
+import qualified Data.IntSet as IntSet
+import Text.Read (readMaybe)
 import GHC.Stack
 
 
@@ -98,6 +107,9 @@ consFirstChunk a stream = stream & \case
   where
     Builder{..} = monadBuilder
 
+-- This is an internal function used in 'seperate' from the original source.
+-- It removes functoral and monadic steps and reduces to some type 'b'.
+-- Here it's adapted to consume the stream linearly.
 destroyExposed
   :: forall f m r b. (Control.Functor f, Control.Monad m) =>
      Stream f m r #-> (f b #-> b) -> (m b #-> b) -> (r #-> b) -> b
@@ -109,7 +121,6 @@ destroyExposed stream0 construct theEffect done = loop stream0
       Return r -> done r
       Effect m -> theEffect (Control.fmap loop m)
       Step f  -> construct (Control.fmap loop f)
-{-# INLINABLE destroyExposed #-}
 
 
 -- # Splitting and inspecting streams of elements
@@ -221,39 +232,36 @@ group = groupBy (==)
 -- # Sum and compose manipulation
 -------------------------------------------------------------------------------
 
+-- Remark. Most of these functions are general and were merely cut and pasted
+-- from the original library.
+
 distinguish :: (a -> Bool) -> Of a r -> Sum (Of a) (Of a) r
 distinguish predicate (a :> b) = case predicate a of
   True -> InR (a :> b)
   False -> InL (a :> b)
-{-# INLINE distinguish #-}
 
 switch :: Sum f g r -> Sum g f r
 switch s = case s of InL a -> InR a; InR a -> InL a
-{-# INLINE switch #-}
 
 sumToEither :: Sum (Of a) (Of b) r ->  Of (Either a b) r
 sumToEither s = case s of
   InL (a :> r) -> Left a :> r
   InR (b :> r) -> Right b :> r
-{-# INLINE sumToEither #-}
 
 eitherToSum :: Of (Either a b) r -> Sum (Of a) (Of b) r
 eitherToSum s = case s of
   Left a :> r  -> InL (a :> r)
   Right b :> r -> InR (b :> r)
-{-# INLINE eitherToSum #-}
 
 composeToSum ::  Compose (Of Bool) f r -> Sum f f r
 composeToSum x = case x of
   Compose (True :> f) -> InR f
   Compose (False :> f) -> InL f
-{-# INLINE composeToSum #-}
 
 sumToCompose :: Sum f f r -> Compose (Of Bool) f r
 sumToCompose x = case x of
   InR f -> Compose (True :> f)
   InL f -> Compose (False :> f)
-{-# INLINE sumToCompose #-}
 
 separate :: forall m f g r.
   (Control.Monad m, Control.Functor f, Control.Functor g) =>
@@ -264,7 +272,6 @@ separate stream = destroyExposed stream fromSum (Effect . Control.lift) Return
     fromSum x = x & \case
       InL fss -> Step fss
       InR gss -> Effect (Step $ Control.fmap Return gss)
-{-# INLINABLE separate #-}
 
 unseparate :: (Control.Monad m, Control.Functor f, Control.Functor g) =>
   Stream f (Stream g m) r -> Stream (Sum f g) m r
@@ -272,7 +279,6 @@ unseparate stream =
   destroyExposed stream (Step . InL) (Control.join . maps InR) return
  where
     Builder{..} = monadBuilder
-{-# INLINABLE unseparate #-}
 
 
 -- # Partitions
@@ -329,6 +335,22 @@ mapMaybe f stream = stream & \case
   where
     Builder{..} = monadBuilder
 
+-- Note: since the 'b' inside the function that is the first argument
+-- goes into an unrestricted spot of the 'Of' constructor, yet is trapped
+-- in a control monad, it must be wrapped in an 'Unrestricted'.
+mapMaybeM :: Control.Monad m =>
+  (a -> m (Maybe (Unrestricted b))) -> Stream (Of a) m r #-> Stream (Of b) m r
+mapMaybeM f stream = stream & \case
+  Return r -> Return r
+  Effect m -> Effect $ Control.fmap (mapMaybeM f) m
+  Step (a :> as) -> Effect $ do
+    mb <- f a
+    mb & \case
+      Nothing -> return $ mapMaybeM f as
+      Just (Unrestricted b) -> return $ Step (b :> mapMaybeM f as)
+  where
+    Builder{..} = monadBuilder
+
 
 -- # Direct Transformations
 -------------------------------------------------------------------------------
@@ -339,43 +361,322 @@ map f stream = stream & \case
   Step (a :> rest) -> Step $ (f a) :> map f rest
   Effect ms -> Effect $ Control.fmap (map f) ms
 
+-- Remark.
+--
+-- The functor transformation in functions like maps, mapped, mapsPost,
+-- and such must be linear since the 'Stream' data type holds each 
+-- functor step with a linear arrow.
+
 maps :: forall f g m r . (Control.Monad m, Control.Functor f) =>
   (forall x . f x #-> g x) -> Stream f m r #-> Stream g m r
 maps phi = loop
   where
-    Builder{..} = monadBuilder
     loop :: Stream f m r #-> Stream g m r
     loop stream = stream & \case
       Return r -> Return r
       Effect m -> Effect $ Control.fmap (maps phi) m
       Step f -> Step (phi (Control.fmap loop f))
 
-  --, mapM
-  --, mapped
-  --, for
-  --, with
-  --, subst
-  --, copy
-  --, copy'
-  --, store
-  --, chain
-  --, sequence
-  --, filter
-  --, filterM
-  --, delay
-  --, intersperse
-  --, take
-  --, takeWhile
-  --, takeWhileM
-  --, drop
-  --, dropWhile
-  --, concat
-  --, scan
-  --, scanM
-  --, scanned
-  --, read
-  --, show
-  --, cons
-  --, duplicate
-  --, duplicate'
+-- Remark: Since the mapping function puts its result in a control monad,
+-- it must be used exactly once after the monadic value is bound.
+-- As a result the mapping function needs to return an 'Unrestricted b'
+-- so that we can place the 'b' in the first argument of the
+-- 'Of' constructor, which is unrestricted.
+mapM :: Control.Monad m =>
+  (a -> m (Unrestricted b)) -> Stream (Of a) m r #-> Stream (Of b) m r
+mapM f s = loop f s
+  where
+    Builder{..} = monadBuilder
+    loop :: Control.Monad m =>
+      (a -> m (Unrestricted b)) -> Stream (Of a) m r #-> Stream (Of b) m r
+    loop f stream = stream & \case
+      Return r -> Return r
+      Effect m -> Effect $ Control.fmap (loop f) m
+      Step (a :> as) -> Effect $ do
+        Unrestricted b <- f a
+        return $ Step (b :> (loop f as))
+
+mapsPost :: forall m f g r. (Control.Monad m, Control.Functor g) =>
+  (forall x. f x #-> g x) -> Stream f m r #-> Stream g m r
+mapsPost phi = loop
+  where
+    loop :: Stream f m r #-> Stream g m r
+    loop stream = stream & \case
+      Return r -> Return r
+      Effect m -> Effect $ Control.fmap loop m
+      Step f -> Step $ Control.fmap loop $ phi f
+
+mapped :: forall f g m r . (Control.Monad m, Control.Functor f) =>
+  (forall x. f x #-> m (g x)) -> Stream f m r #-> Stream g m r
+mapped phi = loop
+  where
+  loop :: Stream f m r #-> Stream g m r
+  loop stream = stream & \case
+    Return r -> Return r
+    Effect m -> Effect $ Control.fmap loop m
+    Step f -> Effect $ Control.fmap Step $ phi $ Control.fmap loop f
+
+mapsMPost :: forall m f g r. (Control.Monad m, Control.Functor g) =>
+  (forall x. f x #-> m (g x)) -> Stream f m r #-> Stream g m r
+mapsMPost phi = loop
+  where
+  loop :: Stream f m r #-> Stream g m r
+  loop stream = stream & \case
+    Return r -> Return r
+    Effect m -> Effect $ Control.fmap loop m
+    Step f -> Effect $ Control.fmap (Step . Control.fmap loop) $ phi f
+
+mappedPost :: forall m f g r. (Control.Monad m, Control.Functor g) =>
+  (forall x. f x #-> m (g x)) -> Stream f m r #-> Stream g m r
+mappedPost phi = loop
+  where
+  loop :: Stream f m r #-> Stream g m r
+  loop stream = stream & \case
+    Return r -> Return r
+    Effect m -> Effect $ Control.fmap loop m
+    Step f -> Effect $ Control.fmap (Step . Control.fmap loop) $ phi f
+
+for :: forall f m r a x . (Control.Monad m, Control.Functor f, Consumable x) =>
+  Stream (Of a) m r #-> (a -> Stream f m x) -> Stream f m r
+for stream expand = for' stream
+  where
+    Builder{..} = monadBuilder
+    for' :: Stream (Of a) m r #-> Stream f m r
+    for' stream = stream & \case
+      Return r -> Return r
+      Effect m -> Effect $ Control.fmap for' m
+      Step (a :> as) -> do
+         x <- expand a
+         lseq x $ for' as
+
+-- Note: since the 'x' is discarded inside a control functor,
+-- we need it to be consumable
+with :: forall f m r a x . (Control.Monad m, Control.Functor f, Consumable x) =>
+  Stream (Of a) m r #-> (a -> f x) -> Stream f m r
+with s f = loop s
+  where
+    loop :: Stream (Of a) m r #-> Stream f m r
+    loop stream = stream & \case
+      Return r -> Return r
+      Effect m -> Effect $ Control.fmap loop m
+      Step (a :> as) -> Step $ Control.fmap (`lseq` (loop as)) (f a)
+
+subst :: (Control.Monad m, Control.Functor f, Consumable x) =>
+  (a -> f x) -> Stream (Of a) m r #-> Stream f m r
+subst = flip with where
+  flip :: (a #-> b -> c) -> b -> a #-> c
+  flip f b a = f a b
+
+copy :: forall a m r . Control.Monad m =>
+     Stream (Of a) m r #-> Stream (Of a) (Stream (Of a) m) r
+copy = Effect . return . loop
+  where
+    Builder{..} = monadBuilder
+    loop :: Stream (Of a) m r #-> Stream (Of a) (Stream (Of a) m) r
+    loop stream = stream & \case
+      Return r -> Return r
+      Effect m -> Effect $ Control.fmap loop (Control.lift m)
+      Step (a :> as) -> Effect $ Step (a :> Return (Step (a :> loop as)))
+
+duplicate :: forall a m r . Control.Monad m =>
+     Stream (Of a) m r #-> Stream (Of a) (Stream (Of a) m) r
+duplicate = copy
+
+-- Note: to use the stream linearly the first argument
+-- must be a linear function
+store :: Control.Monad m =>
+  (Stream (Of a) (Stream (Of a) m) r #-> t) -> Stream (Of a) m r #-> t
+store f x = f (copy x)
+
+-- Note: since we discard the 'y' inside a control monad, it needs to be
+-- consumable
+chain :: forall a m r y . (Control.Monad m, Consumable y) =>
+  (a -> m y) -> Stream (Of a) m r #-> Stream (Of a) m r
+chain f = loop
+  where
+    Builder{..} = monadBuilder
+    loop :: Stream (Of a) m r #-> Stream (Of a) m r
+    loop stream = stream & \case
+      Return r -> Return r
+      Effect m  -> Effect $ Control.fmap loop m
+      Step (a :> as) -> Effect $ do
+        y <- f a
+        return $ lseq y $ Step (a :> loop as)
+
+-- Note: since the value of type 'a' is inside a control monad but
+-- needs to be used in an unrestricted position in 'Of', the input stream
+-- needs to hold values of type 'm (Unrestricted a)'.
+sequence :: forall a m r . Control.Monad m =>
+  Stream (Of (m (Unrestricted a))) m r #-> Stream (Of a) m r
+sequence = loop
+  where
+    Builder{..} = monadBuilder
+    loop :: Stream (Of (m (Unrestricted a))) m r #-> Stream (Of a) m r
+    loop stream = stream & \case
+      Return r -> Return r
+      Effect m -> Effect $ Control.fmap loop m
+      Step (ma :> mas) -> Effect $ do
+        Unrestricted a <- ma
+        return $ Step (a :> loop mas)
+
+
+nubOrd :: (Control.Monad m, Ord a) => Stream (Of a) m r #-> Stream (Of a) m r
+nubOrd = nubOrdOn id
+
+-- XXX Could improve with linear mutable sets
+nubOrdOn :: forall m a b r . (Control.Monad m, Ord b) =>
+  (a -> b) -> Stream (Of a) m r #-> Stream (Of a) m r
+nubOrdOn f xs = loop Set.empty xs
+  where
+  loop :: Set.Set b -> Stream (Of a) m r #-> Stream (Of a) m r
+  loop !set stream = stream & \case
+    Return r -> Return r
+    Effect m -> Effect $ Control.fmap (loop set) m
+    Step (a :> as) -> case Set.member (f a) set of
+         True -> loop set as
+         False-> Step (a :> loop (Set.insert (f a) set) as)
+
+nubInt :: Control.Monad m => Stream (Of Int) m r #-> Stream (Of Int) m r
+nubInt = nubIntOn id
+
+nubIntOn :: forall m a r . (Control.Monad m) =>
+  (a -> Int) -> Stream (Of a) m r #-> Stream (Of a) m r
+nubIntOn f xs = loop IntSet.empty xs
+  where
+  loop :: IntSet.IntSet -> Stream (Of a) m r #-> Stream (Of a) m r
+  loop !set stream = stream & \case
+    Return r -> Return r
+    Effect m -> Effect $ Control.fmap (loop set) m
+    Step (a :> as) -> case IntSet.member (f a) set of
+         True -> loop set as
+         False-> Step (a :> loop (IntSet.insert (f a) set) as)
+
+filter  :: forall a m r . Control.Monad m =>
+  (a -> Bool) -> Stream (Of a) m r #-> Stream (Of a) m r
+filter pred = loop
+  where
+    Builder{..} = monadBuilder
+    loop :: Stream (Of a) m r #-> Stream (Of a) m r
+    loop stream = stream & \case
+      Return r -> Return r
+      Effect m -> Effect $ Control.fmap loop m
+      Step (a :> as) -> case pred a of
+        True -> Step (a :> loop as)
+        False -> loop as
+
+filterM  :: forall a m r . Control.Monad m =>
+  (a -> m Bool) -> Stream (Of a) m r #-> Stream (Of a) m r
+filterM pred = loop
+  where
+    Builder{..} = monadBuilder
+    loop :: Stream (Of a) m r #-> Stream (Of a) m r
+    loop stream = stream & \case
+      Return r -> Return r
+      Effect m-> Effect $ Control.fmap loop m
+      Step (a :> as) -> Effect $ do
+        bool <- pred a
+        bool & \case
+          True -> return $ Step (a :> loop as)
+          False -> return $ loop as
+
+intersperse :: forall a m r . Control.Monad m =>
+  a -> Stream (Of a) m r #-> Stream (Of a) m r
+intersperse x stream = stream & \case
+    Return r -> Return r
+    Effect m -> Effect $ Control.fmap (intersperse x) m
+    Step (a :> as) -> loop a as
+  where
+    -- Given the first element of a stream, intersperse the bound
+    -- element named 'x'
+    loop :: a -> Stream (Of a) m r #-> Stream (Of a) m r
+    loop !a stream = stream & \case
+      Return r -> Step (a :> Return r)
+      Effect m -> Effect $ Control.fmap (loop a) m
+      Step (a' :> as) -> Step (a :> Step (x :> loop a' as))
+
+drop :: (HasCallStack, Control.Monad m) =>
+  Int -> Stream (Of a) m r #-> Stream (Of a) m r
+drop n stream = case compare n 0 of
+  LT -> Prelude.error "drop called with negative int" $ stream
+  EQ -> stream
+  GT -> stream & \case
+    Return r -> Return r
+    Effect m -> Effect $ Control.fmap (drop n) m
+    Step (_ :> as) -> drop (n-1) as
+
+dropWhile :: forall a m r . Control.Monad m =>
+  (a -> Bool) -> Stream (Of a) m r #-> Stream (Of a) m r
+dropWhile pred = loop
+  where
+    loop :: Stream (Of a) m r #-> Stream (Of a) m r
+    loop stream = stream & \case
+      Return r -> Return r
+      Effect m -> Effect $ Control.fmap loop m
+      Step (a :> as) -> case pred a of
+        True -> loop as
+        False -> Step (a :> as)
+
+scan :: forall a x b m r . Control.Monad m =>
+  (x -> a -> x) -> x -> (x -> b) -> Stream (Of a) m r #-> Stream (Of b) m r
+scan step begin done stream = Step (done begin :> loop begin stream)
+  where
+    loop :: x -> Stream (Of a) m r #-> Stream (Of b) m r
+    loop !acc stream = stream & \case
+      Return r -> Return r
+      Effect m -> Effect $ Control.fmap (loop acc) m
+      Step (a :> as) -> Step (done acc' :> loop acc' as) where
+        !acc' = step acc a
+
+-- Note: since the accumulated value (inside the control monad) is used both in
+-- populating the output stream and in accumulation, it needs to be wrapped in
+-- an 'Unrestricted' accross the function
+scanM :: forall a x b m r . Control.Monad m =>
+  (x #-> a -> m (Unrestricted x)) ->
+  m (Unrestricted x) ->
+  (x #-> m (Unrestricted b)) ->
+  Stream (Of a) m r #->
+  Stream (Of b) m r
+scanM step mx done stream = stream & \case
+  Return r -> Effect $ do
+    Unrestricted x <- mx
+    Unrestricted b <- done x
+    return $ Step $ b :> Return r
+  Effect m -> Effect $ Control.fmap (scanM step mx done) m
+  Step (a :> as) -> Effect $ do
+    Unrestricted x <- mx
+    Unrestricted b <- done x
+    return $ Step $ b :> (scanM step (step x a) done as)
+  where
+    Builder{..} = monadBuilder
+
+scanned :: forall a x b m r . Control.Monad m =>
+  (x -> a -> x) -> x -> (x -> b) -> Stream (Of a) m r #-> Stream (Of (a,b)) m r
+scanned step begin done = loop begin
+  where
+    Builder{..} = monadBuilder
+    loop :: x -> Stream (Of a) m r #-> Stream (Of (a,b)) m r
+    loop !x stream = stream & \case
+      Return r -> Return r
+      Effect m -> Effect $ Control.fmap (loop x) m
+      Step (a :> as) -> do
+        let !acc = done (step x a)
+        Step $ (a, acc) :> Return ()
+        loop (step x a) as
+
+-- Note: this skips failed parses
+-- XXX re-write with Text
+read :: (Control.Monad m, Read a) =>
+  Stream (Of String) m r #-> Stream (Of a) m r
+read = mapMaybe readMaybe
+
+show :: (Control.Monad m, Show a) =>
+  Stream (Of a) m r #-> Stream (Of String) m r
+show = map Prelude.show
+
+cons :: Control.Monad m => a -> Stream (Of a) m r #-> Stream (Of a) m r
+cons a str = Step (a :> str)
+
+  --, wrapEffect
+  --, slidingWindow
+
 
