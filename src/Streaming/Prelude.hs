@@ -1,12 +1,12 @@
 {-# LANGUAGE LinearTypes #-}
 
 module Streaming.Prelude
-  ( module Streaming.Consume
-  , module Streaming.Interop
-  , module Streaming.Many
-  , module Streaming.Process
+  ( module Streaming.Type
   , module Streaming.Produce
-  , module Streaming.Type
+  , module Streaming.Consume
+  , module Streaming.Process
+  , module Streaming.Many
+  , module Streaming.Interop
   ) where
 
 import Streaming.Consume

@@ -8,7 +8,8 @@
 -- | This module provides all functions which produce a
 -- 'Stream (Of a) m r' from some given non-stream inputs.
 module Streaming.Produce
-  ( yield
+  ( -- * Constructing 'Stream's
+    yield
   , each'
   , unfoldr
   , stdinLn

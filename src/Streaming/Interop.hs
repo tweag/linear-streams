@@ -6,7 +6,8 @@
 -- | This module contains functions for interoperating with other
 -- streaming libraries.
 module Streaming.Interop
-  ( reread
+  ( -- * Interoperating with other libraries
+    reread
   ) where
 
 import Streaming.Type
@@ -32,4 +33,5 @@ reread f s = Effect $ do
     Just a -> return $ (yield a >> reread f s)
   where
     Builder{..} = monadBuilder
+{-# INLINABLE reread #-}
 
