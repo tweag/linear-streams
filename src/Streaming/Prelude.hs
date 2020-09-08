@@ -17,6 +17,12 @@
 > import Streaming
 > import qualified Streaming.Prelude as S
 
+
+== Notes for the examples
+
+    Many of the examples are kept simple to illustrate the ideas and don't
+    print. These can be made to print by small changes so that they
+    typecheck with `S.print` and `S.stdoutLn`.
     For the examples below, one sometimes needs
 
 > import Streaming.Prelude (each, yield, next, mapped, stdoutLn, stdinLn)
@@ -29,7 +35,9 @@
 > import qualified Pipes.Prelude as P
 > import qualified System.IO as IO
 
-     Here are some correspondences between the types employed here and elsewhere:
+== Corrsepondences to other streaming libraries
+
+  Here are some correspondences between the types employed here and elsewhere:
 
 >               streaming             |            pipes               |       conduit       |  io-streams
 > -------------------------------------------------------------------------------------------------------------------
