@@ -43,11 +43,14 @@ import GHC.Stack
 
 {-| A singleton stream
 
+>>> :seti -XOverloadedStrings
 >>> stdoutLn $ yield "hello"
 hello
 
->>> S.sum $ do {yield 1; yield 2; yield 3}
-6 :> ()
+>>> runLinearIO $ Control.do
+  s :> () <- S.sum $ do {yield 1; yield 2; yield 3}
+  fromSystemIO (putStrLn (show s))
+6
 
 -}
 yield :: Control.Monad m => a -> Stream (Of a) m ()
@@ -56,7 +59,7 @@ yield x = Step $ x :> Return ()
 
 {- | Stream the elements of a pure, foldable container.
 
->>> S.print $ each' [1..3]
+>>> S.print $ S.each' [1..3]
 1
 2
 3

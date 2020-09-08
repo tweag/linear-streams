@@ -69,6 +69,9 @@ import Control.Monad.Linear.Builder (BuilderType(..), monadBuilder)
 import Control.Concurrent (threadDelay)
 import GHC.Stack
 
+import qualified Streaming.Prelude as S -- TESTING DOCUMENTATION
+import qualified System.IO as System -- TESTING DOCUMENTATION
+
 {- $stream
     The 'Stream' data type is an effectful series of steps with some
     payload value at the bottom. The steps are represented with functors.
@@ -419,9 +422,12 @@ inspect = loop
 {-| Split a succession of layers after some number, returning a streaming or
     effectful pair.
 
->>> rest <- S.print $ S.splitAt 1 $ each' [1..3]
+>>> runLinearIO $ Control.do
+  rest <- S.print' $ S.splitAt 1 $ S.each' [1..3]
+  fromSystemIO (putStrLn "space")
+  S.print' rest
 1
->>> S.print rest
+space
 2
 3
 
@@ -430,12 +436,15 @@ inspect = loop
 
     Thus, e.g.
 
->>> rest <- S.print $ (\s -> splitsAt 2 s >>= splitsAt 2) each' [1..5]
+>>> runLinearIO $ Control.do
+  rest <- S.print' $ (\s -> splitsAt 2 s >>= splitsAt 2) $ S.each' [1..5]
+  fromSystemIO (putStrLn "space")
+  S.print' rest
 1
 2
 3
 4
->>> S.print rest
+space
 5
 
 -}
@@ -458,7 +467,7 @@ splitsAt n stream = loop n stream
 
 {-| Break a stream into substreams each with n functorial layers.
 
->>>  S.print $ mapped S.sum $ chunksOf 2 $ each' [1,1,1,1,1]
+>>>  S.print $ mapped S.sum $ chunksOf 2 $ S.each' [1,1,1,1,1]
 2
 2
 1
@@ -470,6 +479,7 @@ chunksOf n stream = loop n stream
   where
     Builder{..} = monadBuilder
     loop :: Int -> Stream f m r #-> Stream (Stream f m) m r
+    loop n (Return r) = Return r
     loop n stream = Step $ Control.fmap (loop n) $ splitsAt n stream
 {-# INLINABLE chunksOf #-}
 

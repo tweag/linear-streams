@@ -9,7 +9,7 @@ packages:
 
 extra-deps:
   - git: https://github.com/tweag/linear-base.git
-    commit: 5df446e4c8801cd5509837ca3feea77b5ab08850
+    commit: bc95b5d40595226348b99b13815638fabc434230
 
 nix:
   enable: true

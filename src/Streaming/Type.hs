@@ -2,10 +2,11 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LinearTypes #-}
-{-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE RebindableSyntax #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE StandaloneDeriving #-}
 
 module Streaming.Type
   ( -- * The 'Stream' and 'Of' types
@@ -17,7 +18,9 @@ module Streaming.Type
 import qualified Data.Functor.Linear as Data
 import qualified Control.Monad.Linear as Control
 import qualified Prelude.Linear as Linear
+import qualified Prelude
 import Prelude.Linear (($), (.))
+import Data.Unrestricted.Linear
 
 
 -- # Data Definitions
@@ -161,4 +164,6 @@ instance Data.Functor (Of a) where
 instance Control.Functor (Of a) where
   fmap = ofFmap
   {-# INLINE fmap #-}
+
+deriving instance (Prelude.Show a, Prelude.Show r) => Prelude.Show (Of a r)
 

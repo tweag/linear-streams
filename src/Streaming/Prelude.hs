@@ -19,7 +19,7 @@
 
     For the examples below, one sometimes needs
 
-> import Streaming.Prelude (each, yield, next, mapped, stdoutLn, stdinLn)
+> import Streaming.Prelude (each, yield, next, mapped, print', stdoutLn', stdinLn)
 > import Data.Function ((&))
 
    Other libraries that come up in passing are
@@ -28,6 +28,17 @@
 > import qualified Pipes as P
 > import qualified Pipes.Prelude as P
 > import qualified System.IO as IO
+> import qualified Prelude
+> import qualified Prelude.Linear as Linear
+> import Prelude.Linear (($), (.))
+> import Data.Unrestricted.Linear
+> import System.IO.Linear
+
+Extensions used include
+
+>>> :seti -XLinearTypes
+>>> :seti -XQualifiedDo
+
 
      Here are some correspondences between the types employed here and elsewhere:
 

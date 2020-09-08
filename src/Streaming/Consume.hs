@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LinearTypes #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NoImplicitPrelude #-}
@@ -13,6 +14,7 @@ module Streaming.Consume
     stdoutLn
   , stdoutLn'
   , print
+  , print'
   , toHandle
   , writeFile
   -- ** Basic Pure Consumers
@@ -56,9 +58,11 @@ module Streaming.Consume
   ) where
 
 import Streaming.Type
+import Streaming.Produce
 import Streaming.Process
 import System.IO.Linear
 import System.IO.Resource
+import qualified System.IO as System
 import qualified Data.Bool.Linear as Linear
 import Prelude.Linear ((&), ($), (.))
 import Prelude (Show(..), FilePath, (&&), Bool(..), id, (||),
@@ -69,7 +73,6 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
 import Data.Functor.Identity
-import qualified System.IO as System
 import Control.Monad.Linear.Builder (BuilderType(..), monadBuilder)
 import qualified Control.Monad.Linear as Control
 
@@ -82,16 +85,16 @@ import qualified Control.Monad.Linear as Control
 {-| Write 'String's to 'System.stdout' using 'Text.putStrLn'; terminates on a broken output pipe
     (The name and implementation are modelled on the @Pipes.Prelude@ @stdoutLn@).
 
->>> withLinearIO $ Control.fmap move $ S.stdoutLn $ S.each $ words "one two three"
+>>> import qualified Data.Text as Text
+>>> S.stdoutLn $ S.each' (Prelude.fmap Text.pack (Prelude.words "one two three"))
 one
 two
 three
 -}
-stdoutLn :: Stream (Of Text) IO () #-> IO ()
-stdoutLn stream = stdoutLn' stream
-{-# INLINE stdoutLn #-}
+stdoutLn :: Movable r => Stream (Of Text) IO r #-> System.IO r
+stdoutLn = runLinearIO . stdoutLn'
 
--- | Like stdoutLn but with an arbitrary return value
+-- | Like 'stdoutLn' but for non-movable results yet to be consumed.
 stdoutLn' :: forall r. Stream (Of Text) IO r #-> IO r
 stdoutLn' stream = loop stream where
   Builder{..} = monadBuilder
@@ -102,13 +105,17 @@ stdoutLn' stream = loop stream where
     Step (str :> stream) -> do
       fromSystemIO $ Text.putStrLn str
       stdoutLn' stream
-{-# INLINABLE stdoutLn' #-}
+{-# INLINABLE stdoutLn #-}
 
 {-| Print the elements of a stream as they arise.
 
 -}
-print :: Show a => Stream (Of a) IO r #-> IO r
-print = stdoutLn' . map (Text.pack Prelude.. Prelude.show)
+print :: (Show a, Movable r) => Stream (Of a) IO r #-> System.IO r
+print = runLinearIO . stdoutLn' . map (Text.pack Prelude.. Prelude.show)
+
+-- | Like 'print' but for non-movable results yet to be consumed.
+print' :: Show a => Stream (Of a) IO r #-> IO r
+print' = stdoutLn' . map (Text.pack Prelude.. Prelude.show)
 
 -- | Write a stream to a handle and return the handle.
 toHandle :: Handle #-> Stream (Of Text) RIO r #-> RIO (r, Handle)
@@ -139,8 +146,9 @@ writeFile filepath stream = do
 
 {- | Reduce a stream, performing its actions but ignoring its elements.
 
->>> rest <- S.effects $ S.splitAt 2 $ each' [1..5]
->>> S.print rest
+>>> runLinearIO $ Control.do
+  rest <- S.effects $ S.splitAt 2 $ each' [1..5]
+  S.print' rest
 3
 4
 5
@@ -183,10 +191,13 @@ erase stream = loop stream where
 
    Here, for example, we split a stream in two places and throw out the middle segment:
 
->>> rest <- S.print $ S.drained $ S.splitAt 2 $ S.splitAt 5 $ each' [1..7]
+>>> runLinearIO $ Control.do
+  rest <- S.print' $ S.drained $ S.splitAt 2 $ S.splitAt 5 $ each' [1..7]
+  fromSystemIO (putStrLn "space")
+  S.print' rest
 1
 2
->>> S.print rest
+"space"
 6
 7
 
@@ -202,18 +213,21 @@ drained = Control.join . Control.fmap (Control.lift . effects)
 
 {-| Reduce a stream to its return value with a monadic action.
 
->>> S.mapM_ Prelude.print $ each' [1..3]
+>>> let printer = Linear.forget fromSystemIO Prelude.. Prelude.print
+>>> runLinearIO $ S.mapM_ printer $ each' [1..3]
 1
 2
 3
 
 
->>> rest <- S.mapM_ Prelude.print $ S.splitAt 3 $ each' [1..10]
+>>> runLinearIO $ Control.do
+  rest <- S.mapM_ printer $ S.splitAt 3 $ each' [1..10]
+  (s :> ()) <- S.sum rest
+  fromSystemIO (putStrLn (show s))
 1
 2
 3
->>> S.sum rest
-49 :> ()
+49
 
 -}
 mapM_ :: forall a m b r. (Consumable b, Control.Monad m) =>
@@ -371,16 +385,23 @@ any_ f stream = fold_ (||) False id (map f stream)
 >  mapped S.sum :: Stream (Stream (Of Int)) m r #-> Stream (Of Int) m r
 
 
->>> S.sum $ each' [1..10]
-55 :> ()
+>>> runLinearIO $ Control.do
+  s :> () <- S.sum $ each' [1..10]
+  fromSystemIO (putStrLn (show s))
+55
 
->>> (n :> rest)  <- S.sum $ S.splitAt 3 $ each' [1..10]
->>> System.IO.print n
+>>> runLinearIO $ Control.do
+  (n :> rest)  <- S.sum $ S.splitAt 3 $ each' [1..10]
+  fromSystemIO (System.print n)
+  fromSystemIO (System.putStrLn "space")
+  (m :> rest') <- S.sum $ S.splitAt 3 rest
+  fromSystemIO (System.print m)
+  fromSystemIO (System.putStrLn "space")
+  S.print' rest'
 6
->>> (m :> rest') <- S.sum $ S.splitAt 3 rest
->>> System.IO.print m
+"space"
 15
->>> S.print rest'
+"space"
 7
 8
 9
@@ -510,7 +531,7 @@ length = fold (\n _ -> n + 1) 0 id
 
 {-| Run a stream, remembering only its length:
 
->>> runIdentity $ S.length_ (S.each [1..10] :: Stream (Of Int) Identity ())
+>>> runIdentity Prelude.$ S.length_ (S.each [1..10] :: Stream (Of Int) Identity ())
 10
 
 -}
@@ -530,16 +551,9 @@ length_ = fold_ (\n _ -> n + 1) 0 id
 [4,5,6]
 [7,8,9]
 
->>> S.print $ mapped S.toList $ chunksOf 2 $ S.replicateM 4 getLine
-s<Enter>
-t<Enter>
-["s","t"]
-u<Enter>
-v<Enter>
-["u","v"]
 -}
 toList :: Control.Monad m => Stream (Of a) m r #-> m (Of [a] r)
-toList = fold (Prelude.flip (:)) [] id
+toList = fold (\diff a ls -> diff (a : ls)) id (\diff -> diff [])
 
 {-| Convert an effectful @Stream (Of a)@ into a list of @as@
 

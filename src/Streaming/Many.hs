@@ -115,7 +115,7 @@ unzip = loop
 
    The return values of both streams are returned.
 
->>> S.print $ merge (each [1,3,5]) (each [2,4])
+>>> S.print $ merge (each' [1,3,5]) (each' [2,4])
 1
 2
 3
