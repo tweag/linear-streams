@@ -13,6 +13,7 @@ module Streaming.Consume
     stdoutLn
   , stdoutLn'
   , print
+  , print'
   , toHandle
   , writeFile
   -- ** Basic Pure Consumers
@@ -87,11 +88,10 @@ one
 two
 three
 -}
-stdoutLn :: Stream (Of Text) IO () #-> IO ()
-stdoutLn stream = stdoutLn' stream
-{-# INLINE stdoutLn #-}
+stdoutLn :: Movable r => Stream (Of Text) IO r #-> System.IO r
+stdoutLn = runLinearIO . stdoutLn'
 
--- | Like stdoutLn but with an arbitrary return value
+-- | Like 'stdoutLn' but for non-movable results yet to be consumed.
 stdoutLn' :: forall r. Stream (Of Text) IO r #-> IO r
 stdoutLn' stream = loop stream where
   Builder{..} = monadBuilder
@@ -102,13 +102,17 @@ stdoutLn' stream = loop stream where
     Step (str :> stream) -> do
       fromSystemIO $ Text.putStrLn str
       stdoutLn' stream
-{-# INLINABLE stdoutLn' #-}
+{-# INLINABLE stdoutLn #-}
 
 {-| Print the elements of a stream as they arise.
 
 -}
-print :: Show a => Stream (Of a) IO r #-> IO r
-print = stdoutLn' . map (Text.pack Prelude.. Prelude.show)
+print :: (Show a, Movable r) => Stream (Of a) IO r #-> System.IO r
+print = runLinearIO . stdoutLn' . map (Text.pack Prelude.. Prelude.show)
+
+-- | Like 'print' but for non-movable results yet to be consumed.
+print' :: Show a => Stream (Of a) IO r #-> IO r
+print' = stdoutLn' . map (Text.pack Prelude.. Prelude.show)
 
 -- | Write a stream to a handle and return the handle.
 toHandle :: Handle #-> Stream (Of Text) RIO r #-> RIO (r, Handle)
