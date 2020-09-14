@@ -18,12 +18,18 @@ module Streaming.Internal.Many
   , merge
   , mergeOn
   , mergeBy
+  -- ** Miscellanea
+  , oneEach
   ) where
 
 import Streaming.Internal.Type
 import Streaming.Internal.Consume
+import Streaming.Internal.Process
+import Streaming.Internal.Produce
 import Prelude (undefined, Bool(..), Either(..), Ord(..), Ordering(..), (.))
 import Prelude.Linear (($), (&))
+import Prelude (Maybe(..))
+import Data.Unrestricted.Linear
 import qualified Prelude.Linear
 import qualified Prelude.Linear as Linear
 import qualified Control.Monad.Linear as Control
@@ -169,4 +175,60 @@ mergeBy comp s1 s2 = loop s1 s2
           LT -> Step (a :> Step (b :> mergeBy comp as bs))
           _ -> Step (b :> Step (a :> mergeBy comp as bs))
 {-# INLINABLE mergeBy #-}
+
+
+-- # Miscellanea
+-------------------------------------------------------------------------------
+
+-- | 'oneEach' replaces the need for @never@. In the original API,
+-- never was an infinite stream of applicative's pure interwoven with return.
+-- It's purpose was to be the empty of an alternative instance so one could do
+-- a fold over a list of streams using it and @<|>@. This would produce a
+-- stream that streamed one element from each folded over, until one of
+-- the streams ran out; it would then discard the rest.
+--
+-- With 'oneEach', this simply samples one @a@ from each stream until one runs
+-- out, and then performs the effects that remain from each stream.
+oneEach :: Control.Monad m => [Stream (Of a) m ()] #-> Stream (Of a) m ()
+oneEach = loop
+  where
+    loop :: Control.Monad m => [Stream (Of a) m ()] #-> Stream (Of a) m ()
+    loop xs = Effect $ Control.do
+      nexts <- mapMList next xs
+      maybeHeadsGathered <- getHeads nexts
+      maybeHeadsGathered & \case
+        Nothing -> Control.return $ Return ()
+        Just (Unrestricted as, rest) -> Control.return $
+          (each' as) Control.>> (loop rest)
+
+    mapMList :: Control.Monad m => (a #-> m b) -> [a] #-> m [b]
+    mapMList f [] = Control.return []
+    mapMList f (x:xs) = Control.do
+      b <- f x
+      bs <- mapMList f xs
+      Control.return (b:bs)
+
+    getHeads :: Control.Monad m =>
+      [Either () (Unrestricted a, Stream (Of a) m ())] #->
+      m (Maybe (Unrestricted [a], [Stream (Of a) m ()]))
+    getHeads [] = Control.return $ Just (Unrestricted [],[])
+    getHeads (Left () : xs) = Control.do
+      stuff <- mapMList effects (getTails xs)
+      lseq stuff (Control.return Nothing)
+    getHeads (Right (Unrestricted a, s) : xs) = Control.do
+      maybe <- getHeads xs
+      maybe & \case
+        Nothing -> Control.do
+          effects s
+          Control.return Nothing
+        Just (Unrestricted as, ss) ->
+          Control.return $ Just (Unrestricted (a:as), s:ss)
+
+    getTails :: Control.Monad m =>
+      [Either () (Unrestricted a, Stream (Of a) m ())] #->
+      [Stream (Of a) m ()]
+    getTails [] = []
+    getTails ((Left ()):xs) = getTails xs
+    getTails ((Right (Unrestricted a, s)):xs) = s : getTails xs
+{-# INLINABLE oneEach #-}
 

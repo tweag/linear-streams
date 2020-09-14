@@ -13,11 +13,29 @@ module Streaming.Internal.Produce
     yield
   , each'
   , unfoldr
+  --, stdinLnN
+  --, stdinLnUntil
+  --, stdinLnUntilM
+  --, stdinLnZip
+  --, readnLnN
+  --, readnLnUntil
+  --, readnLnUntilM
+  --, readnLnZip
   , fromHandle
   , readFile
+  , iterate
+  , iterateM
   , replicate
   , replicateM
+  --, replicateUntil
+  --, replicateUntilM
   , untilRight
+  --, cycleN
+  --, cycleZip
+  --, enumFromN
+  --, enumFromZip
+  --, enumFromThenN
+  --, enumFromThenNZip
   ) where
 
 import Streaming.Internal.Type
@@ -40,6 +58,26 @@ import GHC.Stack
 
 -- # The Stream Constructors
 -------------------------------------------------------------------------------
+
+{- Remark.
+
+The constructors that replace the constructors for infinite streams are in this
+module. See the readme for an explanation of the workarounds for infinite
+streams.
+
+Basically for the vast majority of cases it suffices to have variants
+of infinite stream constructors that either (1) construct a finite number
+of elements, (2) construct until a boolean condition is met, or (3)
+construct enough elements to be able to zip with some finite stream.
+
+These functions have the postfixes "N", "Until", "UntilM", or "Zip".
+
+Ommisions:
+
+ - @replicateZip@ is easily replaced by mapping the finite stream
+ with @\x -> (x,a)@ for the @a@ we want to replicate
+
+-}
 
 {-| A singleton stream
 
@@ -107,6 +145,22 @@ readFile :: FilePath -> Stream (Of Text) RIO ()
 readFile path = Control.do
   handle <- Control.lift $ openFile path System.ReadMode
   fromHandle handle
+
+-- | Iterate a pure function from a seed value, streaming the results forever
+iterate :: Control.Monad m => (a -> a) -> a -> Stream (Of a) m r
+iterate = loop
+  where
+    loop :: Control.Monad m => (a -> a) -> a -> Stream (Of a) m r
+    loop step x = Effect $ Control.return $ Step $ x :> iterate step (step x)
+{-# INLINABLE iterate #-}
+
+-- | Iterate a monadic function from a seed value, streaming the results forever
+iterateM :: Control.Monad m =>
+  (a -> m (Unrestricted a)) -> m (Unrestricted a) #-> Stream (Of a) m r
+iterateM stepM mx = Effect $ Control.do
+  Unrestricted x <- mx
+  Control.return $ Step $ x :> iterateM stepM (stepM x)
+{-# INLINABLE iterateM #-}
 
 -- | Repeat an element several times.
 replicate :: (HasCallStack, Control.Monad m) => Int -> a -> Stream (Of a) m ()
