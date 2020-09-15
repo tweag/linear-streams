@@ -59,7 +59,8 @@ In general, all changes are necessarily implied from just changing the `m`.
 We can't have functions like `stdinLn` that produce infinite streams.
 Any function that linearly consumes a @Stream (Of a) m r@ where the @m@
 is a control monad, would have to consume the entire stream. Hence,
-for some @f :: Stream (Of a) m r #-> b@, @f stdinLn@ would never terminate.
+for some @f :: Stream (Of a) m r #-> B@, @f stdinLn@ would never terminate.
+Hence, we need workarounds for the original API.
 
 The infinite stream API in the original library consisted of @never@,
 @repeats@, @repeatsM@, @stdinLn@, @readLn@, @cycle@, @enumFrom@, @enumFromThen@.
@@ -69,8 +70,8 @@ The size-delimited replacements of @repeats@ and @repeatsM@ are just @replicates
 
 We replace @never@ with @oneEach@. See the Haddock for how this works.
 
-The rest of the API are constructors that produce an infinite stream possibly
-from some simple arguments. From combing the examples in the Haddock and linked
+The rest of the API are constructors that produce an infinite streams @Of@ elements
+possibly from some simple arguments. From combing the examples in the Haddock and linked
 to by the haddock, three common use cases emerge:
 
  1. Taking some finite amount:
@@ -87,7 +88,8 @@ to by the haddock, three common use cases emerge:
 
  4. Some combination of the above.
 
-We can avoid/replace these cases by having these variants of infinite streams like `stdinLn`:
+We can avoid/replace these cases by having these variants of infinite
+streams like `stdinLn`:
 
 `stdinLnN :: Int -> Stream (Of Text) IO ()`
 `stdinLnUntil :: (Text -> Bool) -> Stream (Of Text) IO ()`

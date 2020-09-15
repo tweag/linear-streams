@@ -13,36 +13,36 @@ module Streaming.Internal.Produce
     yield
   , each'
   , unfoldr
-  --, stdinLnN
-  --, stdinLnUntil
-  --, stdinLnUntilM
-  --, stdinLnZip
-  --, readnLnN
-  --, readnLnUntil
-  --, readnLnUntilM
-  --, readnLnZip
+  , stdinLnN
+  , stdinLnUntil
+  , stdinLnUntilM
+  , stdinLnZip
+  , readLnN
+  , readLnUntil
+  , readLnUntilM
+  , readLnZip
   , fromHandle
   , readFile
   , iterate
   , iterateM
   , replicate
   , replicateM
-  --, replicateUntil
-  --, replicateUntilM
   , untilRight
   --, cycleN
   --, cycleZip
   --, enumFromN
   --, enumFromZip
-  --, enumFromThenN
-  --, enumFromThenNZip
+  --, enumFromThen
+  --, enumFromThenZip
   ) where
 
 import Streaming.Internal.Type
+import Streaming.Internal.Many
 import Streaming.Internal.Process
+import Streaming.Internal.Consume
 import Prelude.Linear (($), (&))
-import Prelude (Either(..), Read, Bool(..), FilePath,
-               Num(..), Int, otherwise, Eq(..), Ord(..), (.))
+import Prelude (Either(..), Read, Bool(..), FilePath, (.), Enum(..),
+               Num(..), Int, otherwise, Eq(..), Ord(..), String)
 import qualified Prelude
 import qualified Control.Monad.Linear as Control
 import Data.Unrestricted.Linear
@@ -119,6 +119,104 @@ unfoldr step s = unfoldr' step s
       Right (Unrestricted a,s') ->
         Control.return $ Step $ a :> unfoldr step s'
 {-# INLINABLE unfoldr #-}
+
+-- | @stdinLnN n@ is a stream of @n@ lines from standard input
+stdinLnN :: Int -> Stream (Of Text) IO ()
+stdinLnN n = loop n
+  where
+    loop :: Int -> Stream (Of Text) IO ()
+    loop n | n <= 0 = Return ()
+    loop n = Control.do
+      Unrestricted line <- Control.lift $ fromSystemIOU System.getLine
+      yield (Text.pack line)
+      loop (n-1)
+{-# INLINABLE stdinLnN #-}
+
+-- | Provides a stream of standard input and omits the first line
+-- that satisfies the predicate, possibly requiring IO
+stdinLnUntilM :: (Text -> IO Bool) -> Stream (Of Text) IO ()
+stdinLnUntilM f = loop f
+  where
+    loop :: (Text -> IO Bool) -> Stream (Of Text) IO ()
+    loop f = Control.do
+      Unrestricted line <- Control.lift $ fromSystemIOU System.getLine
+      let textLine = Text.pack line
+      test <- Control.lift $ f textLine
+      test & \case
+        True -> Control.return ()
+        False -> Control.do
+          yield textLine
+          loop f
+{-# INLINABLE stdinLnUntilM #-}
+
+-- | Provides a stream of standard input and omits the first line
+-- that satisfies the predicate
+stdinLnUntil :: (Text -> Bool) -> Stream (Of Text) IO ()
+stdinLnUntil f = stdinLnUntilM (\t -> Control.return (f t))
+{-# INLINE stdinLnUntil #-}
+
+-- | Given a finite stream, provide a stream of lines of standard input
+-- zipped with that finite stream
+stdinLnZip :: Stream (Of x) IO r #-> Stream (Of (Text, x)) IO r
+stdinLnZip = loop
+  where
+    loop :: Stream (Of x) IO r #-> Stream (Of (Text, x)) IO r
+    loop stream = stream & \case
+      Return r -> Return r
+      Effect m -> Effect $ Control.fmap loop m
+      Step (x :> rest) -> Control.do
+        Unrestricted line <- Control.lift $ fromSystemIOU System.getLine
+        yield (Text.pack line, x)
+        loop rest
+{-# INLINABLE stdinLnZip #-}
+
+-- Remark. To avoid unpacking a re-reading things in the logic below,
+-- we need to repeat some of the computation above. This could be made
+-- cleaner with internal stdinLn* functions on Strings that we wrap as needed.
+
+readLnN :: Read a => Int -> Stream (Of a) IO ()
+readLnN n = loop n
+  where
+    loop :: Read a => Int -> Stream (Of a) IO ()
+    loop n | n <= 0 = Return ()
+    loop n = Control.do
+      Unrestricted line <- Control.lift $ fromSystemIOU System.getLine
+      let value = Prelude.read line
+      yield value
+      loop (n-1)
+{-# INLINABLE readLnN #-}
+
+readLnUntilM :: Read a => (a -> IO Bool) -> Stream (Of a) IO ()
+readLnUntilM f = loop f
+  where
+    loop :: Read a => (a -> IO Bool) -> Stream (Of a) IO ()
+    loop f = Control.do
+      Unrestricted line <- Control.lift $ fromSystemIOU System.getLine
+      let value = Prelude.read line
+      test <- Control.lift $ f value
+      test & \case
+        True -> Return ()
+        False -> Control.do
+          yield value
+          loop f
+{-# INLINABLE readLnUntilM #-}
+
+readLnUntil :: Read a => (a -> Bool) -> Stream (Of a) IO ()
+readLnUntil f = readLnUntilM (\a -> Control.return (f a))
+{-# INLINE readLnUntil #-}
+
+readLnZip :: Read a => Stream (Of x) IO r #-> Stream (Of (a, x)) IO r
+readLnZip = loop
+  where
+    loop :: Read a => Stream (Of x) IO r #-> Stream (Of (a, x)) IO r
+    loop stream = stream & \case
+      Return r -> Return r
+      Effect m -> Effect $ Control.fmap loop m
+      Step (x :> rest) -> Control.do
+        Unrestricted line <- Control.lift $ fromSystemIOU System.getLine
+        yield (Prelude.read line, x)
+        loop rest
+{-# INLINE readLnZip #-}
 
 -- Note: we use the RIO monad from linear base to enforce
 -- the protocol of file handles and file I/O
@@ -209,4 +307,84 @@ untilRight mEither = Effect loop
           Control.return $ Step $ a :> (untilRight mEither)
         Right r -> Control.return $ Return r
 {-# INLINABLE untilRight #-}
+
+-- | Cycle a stream a finite number of times
+cycleN :: forall r f m. (Control.Monad m, Control.Functor f, Consumable r) =>
+  Int -> Stream f m r -> Stream f m r
+cycleN = loop
+  where
+    loop :: Int -> Stream f m r -> Stream f m r
+    loop n stream | n <= 1 = stream
+    loop n stream = Control.do
+      r <- stream
+      lseq r (loop (n-1) stream)
+{-# INLINABLE cycleN #-}
+
+-- | @cycleZip s1 s2@ will cycle @s2@ just enough to zip with the given finite
+-- stream @s1@. Note that we consume all the effects of the remainder of the
+-- cycled stream @s2@. That is, we consume @s2@ the smallest natural number of
+-- times we need to zip.
+cycleZip :: forall a b m r s. (Control.Monad m, Consumable s) =>
+  Stream (Of a) m r #-> Stream (Of b) m s -> Stream (Of (a,b)) m r
+cycleZip s1 s2 = loop s1 s2
+  where
+  loop :: Stream (Of a) m r #-> Stream (Of b) m s #-> Stream (Of (a,b)) m r
+  loop s1' s2' = Control.do
+    residual <- zip' s1' (Control.fmap consume s2')
+    residual & \case
+      (Left r, Left ()) -> Control.return r
+      (Left r, Right rest) -> Control.do
+        Control.lift $ effects rest
+        Control.return r
+      (Right as, Left ()) -> loop as s2
+      (Right as, Right bs) -> loop as (bs Control.>> s2)
+{-# INLINABLE cycleZip #-}
+
+{-| An finite sequence of enumerable values at a fixed distance, determined
+   by the first and second values.
+
+>>> S.print $ S.enumFromThenN 3 100 200
+100
+200
+300
+
+-}
+enumFromThenN :: (Control.Monad m, Enum e) => Int -> e -> e -> Stream (Of e) m ()
+enumFromThenN = loop
+  where
+    loop :: (Control.Monad m, Enum e) => Int -> e -> e -> Stream (Of e) m ()
+    loop n e e'
+      | n <= 0 = Return ()
+      | Prelude.otherwise = yield e Control.>> enumFromThenN (n-1) e' e''
+      where
+        -- e'' = e' + (e' - e)
+        e'' = toEnum ((2 * fromEnum e') - (fromEnum e))
+{-# INLINABLE enumFromThenN #-}
+
+-- | A finite sequence of enumerable values at a fixed distance determined
+-- by the first and second values. The length is limited by zipping
+-- with a given finite stream, i.e., the first argument.
+enumFromThenZip :: (Control.Monad m, Enum e) =>
+  Stream (Of a) m r #-> e -> e -> Stream (Of (a,e)) m r
+enumFromThenZip stream e e' = stream & \case
+  Return r -> Return r
+  Effect m -> Effect $ Control.fmap (\s -> enumFromThenZip s e e') m
+  Step (a :> rest) -> Step $ (a,e) :> (enumFromThenZip rest e' e'')
+    where
+        -- e'' = e' + (e' - e)
+        e'' = toEnum ((2 * fromEnum e') - (fromEnum e))
+{-# INLINABLE enumFromThenZip #-}
+
+-- | Like 'enumFromThenN' but where the next element in the enumeration is just
+-- the successor @succ n@ for a given enum @n@.
+enumFromN :: (Control.Monad m, Enum e) => Int -> e -> Stream (Of e) m ()
+enumFromN n e = enumFromThenN n e (succ e)
+{-# INLINE enumFromN #-}
+
+-- | Like 'enumFromThenZip' but where the next element in the enumeration is just
+-- the successor @succ n@ for a given enum @n@.
+enumFromZip :: (Control.Monad m, Enum e) =>
+  Stream (Of a) m r #-> e -> Stream (Of (a,e)) m r
+enumFromZip stream e = enumFromThenZip stream e (succ e)
+{-# INLINE enumFromZip #-}
 

@@ -35,8 +35,8 @@ module Streaming.Internal.Many
 import Streaming.Internal.Type
 import Streaming.Internal.Consume
 import Streaming.Internal.Process
-import Streaming.Internal.Produce
 import Prelude (undefined, Bool(..), Either(..), Ord(..), Ordering(..), (.))
+import qualified Prelude
 import Prelude.Linear (($), (&))
 import Prelude (Maybe(..))
 import Data.Unrestricted.Linear
@@ -359,6 +359,10 @@ mergeBy comp s1 s2 = loop s1 s2
 oneEach :: Control.Monad m => [Stream (Of a) m ()] #-> Stream (Of a) m ()
 oneEach = loop
   where
+    inlineEach :: Control.Monad m => [a] -> Stream (Of a) m ()
+    inlineEach xs =
+      Prelude.foldr (\a stream -> Step $ a :> stream) (Return ()) xs
+
     loop :: Control.Monad m => [Stream (Of a) m ()] #-> Stream (Of a) m ()
     loop xs = Effect $ Control.do
       nexts <- mapMList next xs
@@ -366,7 +370,7 @@ oneEach = loop
       maybeHeadsGathered & \case
         Nothing -> Control.return $ Return ()
         Just (Unrestricted as, rest) -> Control.return $
-          (each' as) Control.>> (loop rest)
+          (inlineEach as) Control.>> (loop rest)
 
     mapMList :: Control.Monad m => (a #-> m b) -> [a] #-> m [b]
     mapMList f [] = Control.return []
